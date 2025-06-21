@@ -62,9 +62,6 @@ class DroneSimulator:
         self.integral_error = np.zeros(3, dtype=np.float64)
         self.prev_error = np.zeros(3, dtype=np.float64)
         self.last_force_cmd = np.zeros(3, dtype=np.float64)
-        
-        # Add state for the derivative low-pass filter
-        self.derivative_filter_tc = 0.05  # 50ms time constant for the filter
         self.filtered_derivative_error = np.zeros(3, dtype=np.float64)
         
     def reset(self, initial_position=None):
@@ -81,13 +78,14 @@ class DroneSimulator:
         self.last_force_cmd = np.zeros(3, dtype=np.float64)
         self.filtered_derivative_error = np.zeros(3, dtype=np.float64)
         
-    def update(self, target_position, target_velocity, dt):
+    def update(self, target_position, target_velocity, target_acceleration, dt):
         """
         Update the drone state based on control inputs and disturbances.
         
         Args:
             target_position: Target position [x, y, z] in meters
             target_velocity: Target velocity [vx, vy, vz] in m/s
+            target_acceleration: Target acceleration [ax, ay, az] in m/s^2
             dt: Time step in seconds
             
         Returns:
@@ -112,17 +110,26 @@ class DroneSimulator:
         
         # Calculate raw derivative of the error
         raw_derivative_error = (position_error - self.prev_error) / dt if dt > 0 else np.zeros(3)
-        
+        self.derivative_filter_tc = 0.05
         # Apply a low-pass filter to the derivative term to reduce noise sensitivity
         alpha = dt / (self.derivative_filter_tc + dt)
         self.filtered_derivative_error = alpha * raw_derivative_error + (1 - alpha) * self.filtered_derivative_error
         
         self.prev_error = position_error.copy()
         
-        # PID control generates a force command using the FILTERED derivative
-        force_cmd = (self.pid_gains['kp'] * position_error + 
+        # PID control generates a feedback force to correct errors
+        pid_force = (self.pid_gains['kp'] * position_error + 
                      self.pid_gains['ki'] * self.integral_error +
                      self.pid_gains['kd'] * self.filtered_derivative_error)
+
+        # Add gravity compensation force (to counteract gravity)
+        gravity_compensation = np.array([0, 0, self.mass * 9.81])
+
+        # Add feedforward force based on desired acceleration from the trajectory
+        feedforward_force = self.mass * target_acceleration
+        
+        # Total force command is the sum of feedback, feedforward, and gravity compensation
+        force_cmd = pid_force + feedforward_force + gravity_compensation
         self.last_force_cmd = force_cmd.copy()
         
         # The kd term already handles velocity error damping. The line below was
@@ -194,9 +201,9 @@ class TrajectoryAccuracySimulation:
             # This provides the optimal balance between fast error correction and stability,
             # eliminating the overshoot and oscillation seen in previous runs.
            pid_gains = {
-                'kp': np.array([47.34, 47.34, 47.34]) if rtk_enabled else np.array([2.0, 2.0, 2.0]),
-                'ki': np.array([0.70, 0.70, 0.70]) if rtk_enabled else np.array([0.1, 0.1, 0.1]), 
-                'kd': np.array([5.50, 5.50, 5.50]) if rtk_enabled else np.array([0.5, 0.5, 0.5])
+                'kp': np.array([163.4830, 163.4830, 163.4830]) if rtk_enabled else np.array([2.0, 2.0, 2.0]),
+                'ki': np.array([11.0087, 11.0087, 11.0087]) if rtk_enabled else np.array([0.1, 0.1, 0.1]), 
+                'kd': np.array([11.0958, 11.0958, 11.0958]) if rtk_enabled else np.array([0.5, 0.5, 0.5])
             }
         
         
@@ -268,9 +275,10 @@ class TrajectoryAccuracySimulation:
         t = 0
         step_counter = 0
         while t <= self.trajectory.total_time:
-            # Get planned position and velocity from trajectory
+            # Get planned position, velocity, and acceleration from trajectory
             planned_position = self.trajectory.evaluate(t)
             planned_velocity = self.trajectory.evaluate(t, derivative_order=1)
+            planned_acceleration = self.trajectory.evaluate(t, derivative_order=2)
             
             # Apply wind disturbance if enabled
             if self.wind_strength > 0:
@@ -291,7 +299,7 @@ class TrajectoryAccuracySimulation:
             
             # Update drone simulator
             actual_position, actual_velocity, _ = self.drone_sim.update(
-                planned_position, planned_velocity, dt)
+                planned_position, planned_velocity, planned_acceleration, dt)
             
             # --- DEBUG PRINTING ---
             if debug and step_counter % 10 == 0: # Print every 25 steps (0.5s)
@@ -1148,9 +1156,9 @@ def auto_tune_pid(waypoints, rtk_enabled, wind_strength, sim_options, n_iteratio
 
     # Define a wider search space for PID gains to find a more robust solution
     search_space = {
-        'kp': (1.0, 50.0),
-        'ki': (0.0, 10.0),
-        'kd': (1.0, 40.0)
+        'kp': (163.0, 163.6),
+        'ki': (11.0, 12.0),
+        'kd': (11.0, 12.0)
     }
 
     for i in range(n_iterations):

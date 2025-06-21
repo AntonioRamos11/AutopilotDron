@@ -32,6 +32,11 @@ from geometry_msgs.msg import PoseArray, Pose
 # Add parent directory to sys.path to import the MinSnapTrajectory module
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'path_planning'))
 from min_snap_trajectory import MinSnapTrajectory, Trajectory
+# Import the new avoidance modules
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'companion_computer', 'obstacle_avoidance'))
+from obstacle_detector import ObstacleDetector
+from avoidance_planner import ObstacleAvoidancePlanner
+
 
 class TrajectoryTrackerNode(Node):
     """
@@ -101,9 +106,13 @@ class TrajectoryTrackerNode(Node):
             self.command_callback,
             10)
         
-        # Create a timer for control loop
+        # Create a timer for the main control loop
         self.timer_period = 0.02  # 50Hz for offboard control
         self.timer = self.create_timer(self.timer_period, self.control_loop)
+        
+        # Create a timer for the avoidance planner loop (runs slower)
+        self.avoidance_timer_period = 0.2 # 5Hz
+        self.avoidance_timer = self.create_timer(self.avoidance_timer_period, self.avoidance_loop)
         
         # State variables
         self.vehicle_status = VehicleStatus()
@@ -118,6 +127,21 @@ class TrajectoryTrackerNode(Node):
         
         # Create trajectory generator
         self.trajectory_generator = MinSnapTrajectory()
+        
+        # --- Initialize Obstacle Avoidance ---
+        self.obstacle_detector = ObstacleDetector()
+        # TODO: In a real system, you would set sensor interfaces here
+        # self.obstacle_detector.set_sensor_interfaces(...) 
+        self.obstacle_detector.start_detection()
+        
+        # The planner needs a publisher to send new waypoints back to this node
+        waypoint_publisher = self.create_publisher(Float32MultiArray, '/trajectory_tracking/waypoints', 10)
+        self.avoidance_planner = ObstacleAvoidancePlanner(
+            self.obstacle_detector,
+            self.trajectory_generator,
+            waypoint_publisher
+        )
+        # --- End Obstacle Avoidance Init ---
         
         # Thread lock for thread safety
         self.lock = threading.Lock()
@@ -143,6 +167,11 @@ class TrajectoryTrackerNode(Node):
         """Process local position updates."""
         with self.lock:
             self.vehicle_local_position = msg
+            
+            # Update the avoidance planner with the drone's current state
+            current_pos = np.array([msg.x, msg.y, msg.z])
+            current_vel = np.array([msg.vx, msg.vy, msg.vz])
+            self.avoidance_planner.update_drone_state(current_pos, current_vel)
             
             # Calculate position error if executing trajectory
             if self.is_executing_trajectory and self.trajectory is not None:
@@ -233,6 +262,9 @@ class TrajectoryTrackerNode(Node):
                 self.trajectory = trajectory
                 self.current_waypoint_idx = 0
                 self.is_executing_trajectory = False
+                
+                # Update the avoidance planner with the new trajectory
+                self.avoidance_planner.update_trajectory(trajectory, waypoints[-1])
                 
                 # Publish trajectory visualization
                 self.publish_trajectory_visualization()
@@ -330,6 +362,12 @@ class TrajectoryTrackerNode(Node):
         
         self.offboard_control_mode_publisher.publish(msg)
     
+    def avoidance_loop(self):
+        """Periodic loop to run the avoidance planner."""
+        with self.lock:
+            if self.is_executing_trajectory:
+                self.avoidance_planner.check_and_replan()
+
     def publish_trajectory_setpoint(self, position, velocity):
         """Publish the trajectory setpoint."""
         msg = TrajectorySetpoint()

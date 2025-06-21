@@ -12,10 +12,13 @@ Reference: "Minimum Snap Trajectory Generation and Control for Quadrotors"
 """
 
 import numpy as np
+from scipy.optimize import minimize
 from scipy.linalg import block_diag
-from scipy.sparse import csc_matrix, linalg as sla
-import matplotlib.pyplot as plt
+from scipy.sparse import csc_matrix, linalg as sla, lil_matrix,bmat
 from mpl_toolkits.mplot3d import Axes3D
+
+
+
 
 class MinSnapTrajectory:
     """Minimum Snap Trajectory Generator for quadrotor UAVs."""
@@ -67,7 +70,7 @@ class MinSnapTrajectory:
         
         # Equality constraints matrix
         A_eq, b_eq = self._create_constraint_matrices(
-            waypoints, n_segments, segment_times, 
+            waypoints, n_segments, segment_times, n_coef_per_seg,
             start_vel, end_vel, start_acc, end_acc
         )
         
@@ -119,96 +122,93 @@ class MinSnapTrajectory:
         
         return cost_matrix
     
-    def _create_constraint_matrices(self, waypoints, n_segments, segment_times,
+    def _create_constraint_matrices(self, waypoints, n_segments, segment_times, n_coef_per_seg,
                                    start_vel, end_vel, start_acc, end_acc):
-        """Create constraint matrices for the optimization problem."""
+        """Create block-diagonal constraint matrices for the optimization problem."""
         n_waypoints = n_segments + 1
-        n_constraints = (
-            n_waypoints +  # Position constraints at waypoints
-            2 +  # Velocity constraints at endpoints
-            2 +  # Acceleration constraints at endpoints
-            (n_segments - 1) * self.continuity_order  # Continuity at intermediate waypoints
-        )
-        n_coef_per_seg = self.order
-        n_coef_total = n_segments * n_coef_per_seg * self.dimension
         
-        A_eq = np.zeros((n_constraints * self.dimension, n_coef_total))
-        b_eq = np.zeros(n_constraints * self.dimension)
+        # --- Calculate number of constraints PER DIMENSION ---
+        # Position constraints: one at the start, one at the end of each segment
+        n_pos_constraints = n_segments + 1 
+        # Velocity constraints: one at the start, one at the end of the whole trajectory
+        n_vel_constraints = 2
+        # Acceleration constraints: one at the start, one at the end of the whole trajectory
+        n_acc_constraints = 2
+        # Continuity constraints at intermediate waypoints (n_segments - 1 junctions)
+        n_cont_constraints = (n_segments - 1) * self.continuity_order
         
+        n_constraints_per_dim = n_pos_constraints + n_vel_constraints + n_acc_constraints + n_cont_constraints
+        
+        # --- Total number of variables and constraints for ALL DIMENSIONS ---
+        n_coeffs_per_dim = n_segments * n_coef_per_seg
+        n_coeffs_total = self.dimension * n_coeffs_per_dim
+        n_constraints_total = self.dimension * n_constraints_per_dim
+
+        # Initialize matrices using LIL format for efficient construction
+        A_eq = lil_matrix((n_constraints_total, n_coeffs_total))
+        b_eq = np.zeros(n_constraints_total)
+        
+        # --- Populate matrices for each dimension ---
         for dim in range(self.dimension):
-            A_dim = np.zeros((n_constraints, n_segments * n_coef_per_seg))
-            b_dim = np.zeros(n_constraints)
+            # Calculate offsets for this dimension's block
+            col_offset = dim * n_coeffs_per_dim
+            row_offset = dim * n_constraints_per_dim
             
-            constraint_idx = 0
+            # Reset relative row index for this dimension's constraints
+            row_idx = 0
             
-            # Position constraints at waypoints
-            for wp in range(n_waypoints):
-                if wp == 0 or wp == n_waypoints - 1:
-                    # First and last waypoints
-                    seg = 0 if wp == 0 else n_segments - 1
-                    t = 0 if wp == 0 else segment_times[seg]
-                    
-                    # Position constraint
-                    A_dim[constraint_idx, seg * n_coef_per_seg:(seg+1) * n_coef_per_seg] = self._poly_eval_coeffs(t)
-                    b_dim[constraint_idx] = waypoints[wp, dim]
-                    constraint_idx += 1
-                else:
-                    # Intermediate waypoints
-                    seg_before = wp - 1
-                    
-                    # Position constraint (end of segment before)
-                    A_dim[constraint_idx, seg_before * n_coef_per_seg:(seg_before+1) * n_coef_per_seg] = \
-                        self._poly_eval_coeffs(segment_times[seg_before])
-                    b_dim[constraint_idx] = waypoints[wp, dim]
-                    constraint_idx += 1
+            # --- Position constraints ---
+            # Constraint for the start of the first segment (t=0)
+            A_eq[row_offset + row_idx, col_offset : col_offset + n_coef_per_seg] = self._poly_eval_coeffs(0)
+            b_eq[row_offset + row_idx] = waypoints[0, dim]
+            row_idx += 1
             
-            # Velocity constraints at endpoints
+            # Constraint for the end of each segment
+            for seg in range(n_segments):
+                A_eq[row_offset + row_idx, col_offset + seg * n_coef_per_seg : col_offset + (seg + 1) * n_coef_per_seg] = \
+                    self._poly_eval_coeffs(segment_times[seg])
+                b_eq[row_offset + row_idx] = waypoints[seg + 1, dim]
+                row_idx += 1
+
+            # --- Velocity constraints at endpoints ---
             # Initial velocity
-            A_dim[constraint_idx, 0:n_coef_per_seg] = self._poly_eval_deriv_coeffs(0, 1)
-            b_dim[constraint_idx] = start_vel[dim]
-            constraint_idx += 1
+            A_eq[row_offset + row_idx, col_offset : col_offset + n_coef_per_seg] = self._poly_eval_deriv_coeffs(0, 1)
+            b_eq[row_offset + row_idx] = start_vel[dim]
+            row_idx += 1
             
             # Final velocity
-            A_dim[constraint_idx, (n_segments-1) * n_coef_per_seg:n_segments * n_coef_per_seg] = \
+            A_eq[row_offset + row_idx, col_offset + (n_segments - 1) * n_coef_per_seg : col_offset + n_segments * n_coef_per_seg] = \
                 self._poly_eval_deriv_coeffs(segment_times[-1], 1)
-            b_dim[constraint_idx] = end_vel[dim]
-            constraint_idx += 1
+            b_eq[row_offset + row_idx] = end_vel[dim]
+            row_idx += 1
             
-            # Acceleration constraints at endpoints
+            # --- Acceleration constraints at endpoints ---
             # Initial acceleration
-            A_dim[constraint_idx, 0:n_coef_per_seg] = self._poly_eval_deriv_coeffs(0, 2)
-            b_dim[constraint_idx] = start_acc[dim]
-            constraint_idx += 1
+            A_eq[row_offset + row_idx, col_offset : col_offset + n_coef_per_seg] = self._poly_eval_deriv_coeffs(0, 2)
+            b_eq[row_offset + row_idx] = start_acc[dim]
+            row_idx += 1
             
             # Final acceleration
-            A_dim[constraint_idx, (n_segments-1) * n_coef_per_seg:n_segments * n_coef_per_seg] = \
+            A_eq[row_offset + row_idx, col_offset + (n_segments - 1) * n_coef_per_seg : col_offset + n_segments * n_coef_per_seg] = \
                 self._poly_eval_deriv_coeffs(segment_times[-1], 2)
-            b_dim[constraint_idx] = end_acc[dim]
-            constraint_idx += 1
+            b_eq[row_offset + row_idx] = end_acc[dim]
+            row_idx += 1
             
-            # Continuity constraints at intermediate waypoints
-            for wp in range(1, n_waypoints - 1):
-                seg_before = wp - 1
-                seg_after = wp
-                
-                # Continuity up to the specified derivative order
+            # --- Continuity constraints at intermediate waypoints ---
+            for seg in range(n_segments - 1):
+                # Continuity for derivatives 0 (pos) to continuity_order-1
                 for deriv in range(self.continuity_order):
-                    # End of segment before = start of segment after
-                    A_dim[constraint_idx, seg_before * n_coef_per_seg:(seg_before+1) * n_coef_per_seg] = \
-                        self._poly_eval_deriv_coeffs(segment_times[seg_before], deriv)
-                    A_dim[constraint_idx, seg_after * n_coef_per_seg:(seg_after+1) * n_coef_per_seg] = \
+                    # Derivative at end of segment 'seg'
+                    A_eq[row_offset + row_idx, col_offset + seg * n_coef_per_seg : col_offset + (seg + 1) * n_coef_per_seg] = \
+                        self._poly_eval_deriv_coeffs(segment_times[seg], deriv)
+                    
+                    # Must equal derivative at start of segment 'seg+1'
+                    A_eq[row_offset + row_idx, col_offset + (seg + 1) * n_coef_per_seg : col_offset + (seg + 2) * n_coef_per_seg] = \
                         -self._poly_eval_deriv_coeffs(0, deriv)
-                    b_dim[constraint_idx] = 0
-                    constraint_idx += 1
-            
-            # Copy the constraint matrix and vector to the overall matrix and vector
-            start_row = dim * n_constraints
-            end_row = (dim + 1) * n_constraints
-            start_col = dim * n_segments * n_coef_per_seg
-            end_col = (dim + 1) * n_segments * n_coef_per_seg
-            
-            A_eq[start_row:end_row, start_col:end_col] = A_dim
-            b_eq[start_row:end_row] = b_dim
+                    
+                    # The difference should be zero
+                    b_eq[row_offset + row_idx] = 0
+                    row_idx += 1
         
         return A_eq, b_eq
     
@@ -235,33 +235,31 @@ class MinSnapTrajectory:
         # Use sparse linear algebra for efficiency
         A_eq_sparse = csc_matrix(A_eq)
         
-        # Create the KKT matrix in a more direct way to avoid ambiguity issues
+        # Create the KKT matrix using the block matrix constructor for efficiency
         n_p = P.shape[0]
-        n_a = A_eq.shape[0]
+        n_a = A_eq_sparse.shape[0]
         
-        # Create empty KKT matrix
-        kkt_shape = (n_p + n_a, n_p + n_a)
-        kkt_matrix = csc_matrix(([], ([], [])), shape=kkt_shape)
+        # Create a zero block of the correct size for the bottom-right
+        zero_block = csc_matrix((n_a, n_a))
         
-        # Fill the KKT matrix blocks
-        # P block
-        kkt_matrix[:n_p, :n_p] = P
+        # Construct the KKT matrix from blocks
+        kkt_matrix = bmat([
+            [P, A_eq_sparse.T],
+            [A_eq_sparse, zero_block]
+        ], format='csc')
         
-        # A_eq^T block
-        kkt_matrix[:n_p, n_p:] = A_eq_sparse.T
-        
-        # A_eq block
-        kkt_matrix[n_p:, :n_p] = A_eq_sparse
-        
-        # Zero block (already zeros by initialization)
-        
-        # Create the right-hand side
+        # Create the right-hand side vector
         kkt_rhs = np.concatenate([np.zeros(n_p), b_eq])
         
         # Solve the KKT system
-        sol = sla.spsolve(kkt_matrix, kkt_rhs)
-        x = sol[:n_p]
-        
+        try:
+            sol = sla.spsolve(kkt_matrix, kkt_rhs)
+            x = sol[:n_p]
+        except Exception as e:
+            self.logger.error(f"Failed to solve KKT system: {e}")
+            # Fallback to a least-squares solution if direct solve fails
+            x = sla.lsqr(A_eq_sparse, b_eq)[0]
+
         return x
 
 

@@ -1,0 +1,28 @@
+.graph TB
+  subgraph Companion Computer
+    A[Mission Planner] --> B[Trajectory Optimization]
+    B --> C[Obstacle Avoidance]
+    C --> D[MAVLink Router]
+  end
+
+  subgraph Flight Controller
+    D --> E[Mission Handling]
+    E --> F[State Estimation]
+    F --> G[Low-Level Control]
+  end
+
+  F --> H[EKF2]
+  G --> I[Attitude Control]
+  G --> J[Rate Control]
+  
+  H --> K[RTK GPS]
+  H --> L[IMU]
+  H --> M[Barometer]
+  H --> N[Optical Flow]
+  
+  I --> O[Actuators]
+  J --> O
+
+  C --> P[Depth Camera]
+  C --> Q[LiDAR]
+  C --> R[Radar]

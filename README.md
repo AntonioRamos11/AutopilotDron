@@ -54,3 +54,6 @@ This project aims to develop a drone autopilot system capable of:
 - [PX4 Documentation](https://docs.px4.io/master/en/)
 - [RTK GPS Setup Guide](https://docs.px4.io/master/en/gps_compass/rtk_gps.html)
 - [MAV Trajectory Generation](https://github.com/ethz-asl/mav_trajectory_generation)# AutopilotDron
+
+
+-- point to point directon --usig the rtk 
