@@ -1,0 +1,29 @@
+FROM ros:humble-ros-base
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    geographiclib-tools \
+    libgeographic-dev \
+    build-essential \
+    cmake \
+    python3-pip \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install GeographicLib datasets
+RUN geographiclib-get-geoids egm96-5
+
+# Create workspace
+WORKDIR /ros_ws
+
+# Clone and build MAVROS (using correct branch)
+RUN mkdir src && \
+    cd src && \
+    git clone https://github.com/mavlink/mavros.git -b humble-devel && \
+    cd .. && \
+    rosdep init && \
+    rosdep update && \
+    rosdep install --from-paths src --ignore-src -y && \
+    colcon build

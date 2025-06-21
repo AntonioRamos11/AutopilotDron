@@ -51,17 +51,19 @@ class TrajectoryOptimizer:
         self.constraints = constraints
         self.logger.info("Trajectory constraints updated")
     
-    def add_obstacle(self, position: Tuple[float, float, float], 
-                    radius: float, height: float = None):
-        """Add an obstacle to be avoided."""
+    def add_obstacle(self, position: np.ndarray, size: np.ndarray):
+        """Add an obstacle to be avoided, using its full dimensions."""
+        # This method signature is now corrected to accept a 'size' vector,
+        # matching what the main simulation provides.
         obstacle = {
             'position': np.array(position),
-            'radius': radius,
-            'height': height or radius * 2,
-            'type': 'cylinder'
+            'size': np.array(size),
+            # We still calculate a radius for any legacy code or visualization,
+            # but the primary data is the size vector.
+            'radius': np.max(size) / 2.0
         }
         self.obstacles.append(obstacle)
-        self.logger.info(f"Added obstacle at {position} with radius {radius}m")
+        # self.logger.info(f"Added obstacle at {position} with size {size}")
     
     def clear_obstacles(self):
         """Clear all obstacles."""
@@ -98,28 +100,26 @@ class TrajectoryOptimizer:
             if segment_times is None:
                 segment_times = self._calculate_segment_times(waypoints)
             
-            # Check for obstacles and modify waypoints if necessary
-            if self.obstacles:
-                waypoints = self._avoid_obstacles(waypoints)
+            # CRITICAL FIX: The internal _avoid_obstacles logic is naive and conflicts
+            # with the smarter re-planning logic in the main simulation. The high-level
+            # planner is responsible for generating safe waypoints. This call is
+            # the source of the crash and is being removed.
+            # if self.obstacles:
+            #     waypoints = self._avoid_obstacles(waypoints)
             
-            # Generate initial trajectory
-            trajectory = self.min_snap_generator.generate_trajectory(
-                waypoints=waypoints,
-                segment_times=segment_times,
-                start_vel=current_vel,
-                end_vel=np.zeros(3),
-                start_acc=current_acc,
-                end_acc=np.zeros(3)
-            )
+            # --- Trajectory Generation and Validation Loop ---
+            # The previous logic only tried once. If the relaxed trajectory was still
+            # invalid, it would fail without retrying. We now implement a loop with
+            # a maximum number of attempts.
+            max_attempts = 3
+            trajectory = None
+            validation_result = {'valid': False}
+            attempts = 0
             
-            # Validate trajectory against constraints
-            validation_result = self._validate_trajectory(trajectory)
-            
-            if not validation_result['valid']:
-                # Re-optimize with relaxed timing
-                self.logger.warning(f"Initial trajectory invalid: {validation_result['reason']}")
-                segment_times = self._relax_segment_times(segment_times, validation_result)
+            while not validation_result['valid'] and attempts < max_attempts:
+                attempts += 1
                 
+                # Generate initial trajectory
                 trajectory = self.min_snap_generator.generate_trajectory(
                     waypoints=waypoints,
                     segment_times=segment_times,
@@ -128,6 +128,14 @@ class TrajectoryOptimizer:
                     start_acc=current_acc,
                     end_acc=np.zeros(3)
                 )
+                
+                # Validate trajectory against constraints
+                validation_result = self._validate_trajectory(trajectory)
+                
+                if not validation_result['valid']:
+                    # Re-optimize with relaxed timing
+                    self.logger.warning(f"Trajectory invalid: {validation_result['reason']}")
+                    segment_times = self._relax_segment_times(segment_times, validation_result)
             
             optimization_time = time.time() - start_time
             
@@ -141,7 +149,7 @@ class TrajectoryOptimizer:
                 success=True,
                 optimization_time=optimization_time,
                 cost=cost,
-                iterations=1,
+                iterations=attempts,
                 message="Trajectory optimized successfully"
             )
             

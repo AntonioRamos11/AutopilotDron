@@ -1,0 +1,24 @@
+r this. The goal is to run your entire ROS 2-based companion software stack and have it control a simulated drone running the actual PX4 flight control firmware.
+
+Here is a breakdown of the steps involved, leveraging the components you've already built:
+
+Set Up the Simulation Environment:
+
+Follow your own instructions in gazebo_config.md to install PX4-SITL and create the Gazebo world. This will give you a physically realistic drone model to test with.
+Integrate the ROS 2 Companion Software:
+
+Launch the PX4 SITL with the RTK-enabled drone model as described in your launch instructions.
+In a separate terminal, launch your main ROS 2 node, trajectory_tracker.py. This node is the core of your companion computer system.
+Run an End-to-End Test:
+
+The trajectory_tracker.py node is designed to listen for waypoint commands on the /trajectory_tracking/waypoints ROS topic.
+Use the ROS 2 command from your system_integration.md file to send a set of waypoints to the system.
+Your trajectory_tracker will then:
+Generate a smooth trajectory using min_snap_trajectory.py.
+Stream high-frequency position setpoints to the simulated PX4 flight controller.
+Monitor the drone in Gazebo to confirm it follows the planned path.
+Validate Performance:
+
+Use the tools you've already identified in gazebo_config.md to analyze the performance, such as rqt_plot to view the tracking error published by your trajectory_tracker node.
+This step validates that your PID gains, feedforward controller, and trajectory generation work together correctly in a near-real-world scenario.
+Once you have successfully completed SITL testing, you will have high confidence in your software. The subsequent steps would then be Hardware-in-the-Loop (HITL) testing and finally, real-world flight testing, starting with simple maneuvers and incrementally increasing complexity.

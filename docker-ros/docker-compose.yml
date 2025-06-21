@@ -1,0 +1,20 @@
+# docker-compose.yml
+version: '3'
+
+services:
+  ros-drone:
+    image: ros-humble-mavros:latest
+    container_name: ros-drone
+    tty: true
+    stdin_open: true
+    network_mode: host  # Required for MAVROS communication
+    volumes:
+      - ./ros_ws:/root/ros_ws  # Mount your ROS workspace
+      - /tmp/.X11-unix:/tmp/.X11-unix  # For GUI applications
+    environment:
+      - DISPLAY=$DISPLAY
+      - QT_X11_NO_MITSHM=1
+    devices:
+      - /dev/ttyUSB0:/dev/ttyUSB0  # Add your serial devices
+      - /dev/ttyACM0:/dev/ttyACM0
+    privileged: true  # Required for serial device access

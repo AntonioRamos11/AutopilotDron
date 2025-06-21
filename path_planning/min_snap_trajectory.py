@@ -304,6 +304,11 @@ class Trajectory:
         # Find which segment this time belongs to
         segment_idx = np.searchsorted(self.cum_segment_times[1:], t, side='right')
         
+        # Defensive check: ensure segment_idx is valid for the coefficients array.
+        # This prevents a crash if segment_times and coefficients are inconsistent.
+        if segment_idx >= self.n_segments:
+            segment_idx = self.n_segments - 1
+            
         # Get the time relative to the start of the segment
         if segment_idx > 0:
             relative_t = t - self.cum_segment_times[segment_idx]
